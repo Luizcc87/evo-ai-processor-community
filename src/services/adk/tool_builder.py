@@ -27,16 +27,73 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 from google.adk.tools import FunctionTool
 import requests
 import json
+import inspect
 import urllib.parse
+import string
 from src.utils.logger import setup_logger
 from src.services.adk.tools import exit_loop
 from src.services.adk.tools import create_text_to_speech_tool
 
 logger = setup_logger(__name__)
+
+
+def _extract_format_fields(value: Any) -> Set[str]:
+    if not isinstance(value, str):
+        return set()
+
+    fields = set()
+    for _, field_name, _, _ in string.Formatter().parse(value):
+        if field_name:
+            fields.add(field_name.split(".", 1)[0].split("[", 1)[0])
+    return fields
+
+
+def _format_value(value: Any, all_values: Dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        try:
+            return value.format(**all_values)
+        except KeyError:
+            return value
+    if isinstance(value, list):
+        return [_format_value(item, all_values) for item in value]
+    if isinstance(value, dict):
+        return {key: _format_value(item, all_values) for key, item in value.items()}
+    return value
+
+
+def _runtime_parameter_names(
+    endpoint: str,
+    headers: Dict[str, Any],
+    path_params: Dict[str, Any],
+    query_params: Dict[str, Any],
+    body_params: Dict[str, Any],
+) -> List[str]:
+    names = set()
+    names.update(_extract_format_fields(endpoint))
+
+    for value in headers.values():
+        names.update(_extract_format_fields(value))
+
+    for param, value in path_params.items():
+        names.add(param)
+        names.update(_extract_format_fields(value))
+
+    for param, value in query_params.items():
+        if isinstance(value, str) and _extract_format_fields(value):
+            names.update(_extract_format_fields(value))
+        elif isinstance(value, (dict, list)):
+            names.update(_extract_format_fields(json.dumps(value)))
+
+    for param, param_config in body_params.items():
+        names.add(param)
+        if isinstance(param_config, dict):
+            names.update(_extract_format_fields(param_config.get("default")))
+
+    return sorted(name for name in names if name.isidentifier())
 
 
 class ToolBuilder:
@@ -70,7 +127,7 @@ class ToolBuilder:
                 }
 
                 # Processes path parameters
-                url = endpoint
+                url = _format_value(endpoint, all_values)
                 for param, value in path_params.items():
                     if param in all_values:
                         # URL encode the value for URL safe characters
@@ -84,13 +141,15 @@ class ToolBuilder:
                 for param, value in query_params.items():
                     if isinstance(value, list):
                         # If the value is a list, join with comma
-                        query_params_dict[param] = ",".join(value)
+                        query_params_dict[param] = ",".join(
+                            str(_format_value(item, all_values)) for item in value
+                        )
                     elif param in all_values:
                         # If the parameter is in the values, use the provided value
                         query_params_dict[param] = all_values[param]
                     else:
                         # Otherwise, use the default value from the configuration
-                        query_params_dict[param] = value
+                        query_params_dict[param] = _format_value(value, all_values)
 
                 # Adds default values to query params if they are not present
                 for param, value in values.items():
@@ -139,6 +198,13 @@ class ToolBuilder:
                     for param, param_config in body_params.items():
                         if param in all_values:
                             body_data[param] = all_values[param]
+                        elif (
+                            isinstance(param_config, dict)
+                            and "default" in param_config
+                        ):
+                            body_data[param] = _format_value(
+                                param_config["default"], all_values
+                            )
 
                     # Adds default values to body if they are not present
                     for param, value in values.items():
@@ -207,6 +273,16 @@ class ToolBuilder:
             for param, value in values.items():
                 param_docs.append(f"{param}: {value}")
 
+        runtime_params = _runtime_parameter_names(
+            endpoint, headers, path_params, query_params, body_params
+        )
+        for param in runtime_params:
+            if not any(
+                doc.startswith(f"{param}:") or doc.startswith(f"{param} ")
+                for doc in param_docs
+            ):
+                param_docs.append(f"{param}: runtime value")
+
         http_tool.__doc__ = f"""
         {description}
 
@@ -219,6 +295,17 @@ class ToolBuilder:
 
         # Defines the function name to be used by the ADK
         http_tool.__name__ = name
+        http_tool.__signature__ = inspect.Signature(
+            parameters=[
+                inspect.Parameter(
+                    param,
+                    inspect.Parameter.KEYWORD_ONLY,
+                    default=inspect.Parameter.empty,
+                    annotation=str,
+                )
+                for param in runtime_params
+            ]
+        )
 
         return FunctionTool(func=http_tool)
 
