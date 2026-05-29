@@ -37,7 +37,7 @@ import uuid
 from src.utils.logger import setup_logger
 from src.services.adk.tools import exit_loop
 from src.services.adk.tools import create_text_to_speech_tool
-from src.schemas.schemas import CustomTool
+from src.models.models import CustomTool
 
 logger = setup_logger(__name__)
 
