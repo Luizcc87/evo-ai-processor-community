@@ -121,6 +121,21 @@ def _with_explicit_parameters(func, name: str, runtime_params: List[str]):
     return wrapped
 
 
+def _tool_parameters(tool_config: Dict[str, Any]) -> Dict[str, Any]:
+    parameters = dict(tool_config.get("parameters") or {})
+
+    for key in ("path_params", "query_params", "body_params"):
+        if key not in parameters and key in tool_config:
+            parameters[key] = tool_config.get(key) or {}
+
+    if "body_type" not in parameters and "body_type" in tool_config:
+        parameters["body_type"] = tool_config.get("body_type")
+    if "array_param" not in parameters and "array_param" in tool_config:
+        parameters["array_param"] = tool_config.get("array_param")
+
+    return parameters
+
+
 def exit_loop(tool_context: ToolContext):
     """Call this function ONLY when the process indicates no further iterations are needed, signaling the loop should end."""
     logger.info(f"[Tool Call] exit_loop triggered by {tool_context.agent_name}")
@@ -140,7 +155,7 @@ class CustomToolBuilder:
         endpoint = tool_config["endpoint"]
         method = tool_config["method"]
         headers = tool_config.get("headers", {})
-        parameters = tool_config.get("parameters", {}) or {}
+        parameters = _tool_parameters(tool_config)
         values = tool_config.get("values", {})
         error_handling = tool_config.get("error_handling", {})
 
