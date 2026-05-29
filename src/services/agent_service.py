@@ -70,25 +70,16 @@ async def _reconstruct_custom_configurations(db: Session, agent: Agent) -> None:
     config = agent.config
     reconstructed = False
 
-    # Only reconstruct if we have IDs but no corresponding configurations
-    # This prevents reconstruction during config processing and only does it during agent retrieval
-
     # Reconstruct custom tools from IDs
     if (
         "custom_tool_ids" in config
         and config["custom_tool_ids"]
-        and (
-            "custom_tools" not in config
-            or not config.get("custom_tools")
-            or not config["custom_tools"].get("http_tools")
-        )
     ):
         try:
             tool_ids = [
                 uuid.UUID(str(tool_id)) for tool_id in config["custom_tool_ids"]
             ]
-            custom_tools_from_ids = await custom_tool_service.get_custom_tools(
-            )
+            custom_tools_from_ids = await custom_tool_service.get_custom_tools(db)
 
             # Filter by IDs
             filtered_tools = [
@@ -113,8 +104,8 @@ async def _reconstruct_custom_configurations(db: Session, agent: Agent) -> None:
             config["custom_tools"]["http_tools"] = http_tools
             reconstructed = True
 
-            logger.debug(
-                f"Reconstructed {len(http_tools)} custom tools for agent {agent.id}"
+            logger.info(
+                f"Refreshed {len(http_tools)} custom tools for agent {agent.id}"
             )
 
         except Exception as e:

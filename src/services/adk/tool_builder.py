@@ -33,9 +33,11 @@ import requests
 import json
 import urllib.parse
 import string
+import uuid
 from src.utils.logger import setup_logger
 from src.services.adk.tools import exit_loop
 from src.services.adk.tools import create_text_to_speech_tool
+from src.schemas.schemas import CustomTool
 
 logger = setup_logger(__name__)
 
@@ -135,6 +137,46 @@ def _tool_parameters(tool_config: Dict[str, Any]) -> Dict[str, Any]:
         parameters["array_param"] = tool_config.get("array_param")
 
     return parameters
+
+
+def _refresh_http_tool_config(tool_config: Dict[str, Any], db=None) -> Dict[str, Any]:
+    if not db or not tool_config.get("id"):
+        return tool_config
+
+    try:
+        tool_id = uuid.UUID(str(tool_config["id"]))
+    except (TypeError, ValueError):
+        return tool_config
+
+    custom_tool = db.query(CustomTool).filter(CustomTool.id == tool_id).first()
+    if not custom_tool:
+        logger.warning(f"Custom tool {tool_id} not found while refreshing config")
+        return tool_config
+
+    error_handling = custom_tool.error_handling or {}
+    logger.info(f"Refreshed custom tool config from database: {custom_tool.name}")
+
+    return {
+        "id": str(custom_tool.id),
+        "name": custom_tool.name,
+        "method": custom_tool.method,
+        "endpoint": custom_tool.endpoint,
+        "headers": custom_tool.headers or {},
+        "parameters": {
+            "path_params": custom_tool.path_params or {},
+            "query_params": custom_tool.query_params or {},
+            "body_params": custom_tool.body_params or {},
+        },
+        "description": custom_tool.description or "",
+        "error_handling": {
+            "timeout": error_handling.get("timeout", 30),
+            "retry_count": error_handling.get("retry_count", 0),
+            "fallback_response": error_handling.get(
+                "fallback_response", {"error": "", "message": ""}
+            ),
+        },
+        "values": custom_tool.values or {},
+    }
 
 
 class ToolBuilder:
@@ -380,7 +422,8 @@ class ToolBuilder:
             http_tools = agent_config["tools"].get("http_tools", [])
 
         for http_tool_config in http_tools:
-            self.tools.append(self._create_http_tool(http_tool_config))
+            refreshed_config = _refresh_http_tool_config(http_tool_config, db)
+            self.tools.append(self._create_http_tool(refreshed_config))
 
         # Add exit_loop tool if specified in configuration
         if agent_config.get("enable_exit_loop", False):
