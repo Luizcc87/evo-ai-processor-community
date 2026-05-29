@@ -31,7 +31,6 @@ from typing import Any, Dict, List, Set
 from google.adk.tools import FunctionTool
 import requests
 import json
-import inspect
 import urllib.parse
 import string
 from src.utils.logger import setup_logger
@@ -65,6 +64,19 @@ def _format_value(value: Any, all_values: Dict[str, Any]) -> Any:
     return value
 
 
+def _format_header_value(value: Any, all_values: Dict[str, Any]) -> Any:
+    formatted = _format_value(value, all_values)
+    if not isinstance(formatted, str):
+        return formatted
+
+    stripped = formatted.strip()
+    if stripped.lower().startswith("bearer "):
+        token = "".join(stripped[7:].split())
+        return f"Bearer {token}"
+
+    return stripped
+
+
 def _runtime_parameter_names(
     endpoint: str,
     headers: Dict[str, Any],
@@ -96,6 +108,20 @@ def _runtime_parameter_names(
     return sorted(name for name in names if name.isidentifier())
 
 
+def _with_explicit_parameters(func, name: str, runtime_params: List[str]):
+    if not runtime_params:
+        func.__name__ = name
+        return func
+
+    arguments = ", ".join(f"{param}: str" for param in runtime_params)
+    forwarded = ", ".join(f"{param}={param}" for param in runtime_params)
+    namespace = {"_target": func}
+    exec(f"def {name}({arguments}):\n    return _target({forwarded})", namespace)
+    wrapped = namespace[name]
+    wrapped.__doc__ = func.__doc__
+    return wrapped
+
+
 class ToolBuilder:
     def __init__(self):
         self.tools = []
@@ -122,7 +148,7 @@ class ToolBuilder:
 
                 # Substitutes placeholders in headers
                 processed_headers = {
-                    k: v.format(**all_values) if isinstance(v, str) else v
+                    k: _format_header_value(v, all_values)
                     for k, v in headers.items()
                 }
 
@@ -293,21 +319,8 @@ class ToolBuilder:
         String containing the response in JSON format
         """
 
-        # Defines the function name to be used by the ADK
-        http_tool.__name__ = name
-        http_tool.__signature__ = inspect.Signature(
-            parameters=[
-                inspect.Parameter(
-                    param,
-                    inspect.Parameter.KEYWORD_ONLY,
-                    default=inspect.Parameter.empty,
-                    annotation=str,
-                )
-                for param in runtime_params
-            ]
-        )
-
-        return FunctionTool(func=http_tool)
+        explicit_http_tool = _with_explicit_parameters(http_tool, name, runtime_params)
+        return FunctionTool(func=explicit_http_tool)
 
     def _create_exit_loop_tool(self) -> FunctionTool:
         """Create the exit_loop tool for LoopAgent."""
